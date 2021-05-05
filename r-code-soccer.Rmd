@@ -1,0 +1,293 @@
+---
+title: "The Beauty of Soccer"
+author: "yining wang"
+date: "2021/4/29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+require(tidyverse)
+require(fmsb)
+require(broom)
+require(rsample)
+require(modelr)
+```
+
+# About the data set
+
+The football data set provides a granular view of 9,074 games, totaling 941,009 events from the biggest 5 European football (soccer) leagues: England, Spain, Germany, Italy, France from 2011/2012 season to 2016/2017 season as of 25.01.2017. The first one is a 941,009 * 22 data frame which each row represents an event like attempt, goal, foul, penalty in one football match. The columns are about the features of this event, including players, times, location, description and so on. The second one is a 10,112 * 18 matrix which each row represents one match. The columns are the features of this match, like date, teams, scores, odds in gambling, etc. 
+
+Most of the features of events are expressed by numbers. The details are contained in 'dict'.
+
+```{r data input and overview, include=FALSE, warning = FALSE}
+setwd('C:/Users/wyn/Desktop/Rutgers/Data Wrangling/DW-project')
+events <- read_csv("events.csv")
+ginf <- read_csv('ginf.csv')
+dict <- read.table('dictionary.txt',sep="\t", fill = T, row.names = NULL)
+colnames(dict) <- c('event_type','description')
+```
+
+```{r}
+glimpse(events)
+glimpse(ginf)
+head(dict)
+```
+
+# data preparation
+
+Since football lottery is not what we are interested in, I just delete that columns. Then, I add two columns presenting the scores of home team and away team in 'ginf' tibble. The criterion is 3 scores for win, 1 score for draw and 0 for lose.
+
+```{r data preparation, warning = FALSE}
+# delete odds data
+ginf <- ginf[, -c(12:18)]
+
+# join 2 tibbles
+events <- left_join(events, ginf)
+
+# create 2 columns presenting the scores of home team and away team
+ginf$htscore <- NULL
+ginf$atscore <- NULL
+
+# 3 scores if win, 1 if draw, 0 if lose
+for (i in 1:nrow(ginf)){
+  if (ginf$fthg[i] > ginf$ftag[i]){
+    ginf$htscore[i] = 3
+    ginf$atscore[i] = 0
+  }
+  if (ginf$fthg[i] == ginf$ftag[i]){
+    ginf$htscore[i] = 1
+    ginf$atscore[i] = 1
+  }
+  if (ginf$fthg[i] < ginf$ftag[i]){
+    ginf$htscore[i] = 0
+    ginf$atscore[i] = 3
+  }
+}
+```
+
+# Who scored the most goals?
+
+The most exciting part of soccer is definitely the goal. Therefore, the first thing I want to detect in this data is that who scored the most goals? 'table 1' is a table containing the most efficient shooters who at least shot 200 times according to the goal percentage. The first one is miroslav klose.
+The total goal number plot reflect the most productive shoots. Unsurprisingly, Messi and Ronaldo are one the top of this plot.
+
+```{r players getting most goals, warning = FALSE}
+# detect the players getting most goals
+goal_efficiency <- filter(events, is_goal == 1) %>% group_by(player) %>% summarize(goal.number = n()) %>% arrange(desc(goal.number))
+
+# add 2 columns which are shot numbers and on target shot numbers to tibble 'goal_efficiency' 
+goal_efficiency <- filter(events, event_type == 1) %>% group_by(player) %>% summarize(shot.number = n()) %>% right_join(goal_efficiency)
+goal_efficiency <- filter(events, shot_outcome == 1) %>% group_by(player) %>% summarize(ontarget.number = n()) %>% right_join(goal_efficiency)
+
+# a table containing the most efficient shooters who at least shot 200 times according to the goal percentage
+goal_efficiency <- goal_efficiency %>% mutate(on.target.percentage = round(ontarget.number/shot.number, digits = 3), goal.percentage = round(goal.number/shot.number, digits = 3))
+table1 <- head(filter(goal_efficiency, shot.number > 200) %>% arrange(desc(goal.percentage)), n = 10)
+table1
+
+# plot
+data.for.plot <- pivot_longer(head(arrange(goal_efficiency, desc(goal.number)), n = 10), 3:4, names_to = 'type', values_to = 'number')
+ggplot(data = data.for.plot, aes(x = number, y = player)) + geom_bar(aes(fill = type), stat = "identity", position = "dodge", width=.5) + geom_text(aes(label = number), hjust = 1.1, vjust = 1, size = 3) + scale_y_discrete(limits = rev(c("lionel messi", "cristiano ronaldo", "zlatan ibrahimovic", "robert lewandowski", "edinson cavani", "gonzalo higuain", "pierreemerick aubameyang", "luis suarez", "diego costa", "alexandre lacazette"))) + ggtitle('Most Productive Shooters in Europe') + xlab('Numbers') + ylab('Shooters') + theme(legend.title = element_blank()) + scale_fill_discrete(labels = c("goal", "shoot"))
+```
+
+# Who scored the most goals in each league?
+
+The second topic coming into my mind is to explore the most productive shooters in each league. After a series of data cleaning, a plot reflecting the most productive shooters in each league is created. It seems that there are no 'super shooters' in England and France, the variance of number of goals is smaller. Attackers in Spain seems scored more goals than others.
+
+```{r Shooter in each league, warning = FALSE}
+# b is a temporary data set containing the most productive shoots in each league
+f <- function(x){arrange(x)[1:5,]}
+a <- filter(events, is_goal == 1) %>% group_by(player, country) %>% summarise(number = n()) %>% arrange(desc(number))
+b <- by(a, a$country, f)
+
+# shot.data is the tibble we use to get the second plot 
+shot.data <- NULL
+for (i in 1:5){
+  temp <- by(a, a$country, f)[i][[1]]
+  shot.data <- rbind(shot.data, temp)
+}
+shot.data$player <- factor(shot.data$player, levels = shot.data$player[order(shot.data$number)])
+
+# plot 2, "Most Productive Shooters in Each League"
+ggplot(shot.data, aes(x=player, y=number, color = country))+ geom_segment(aes(x=player,xend=player, y=0, yend=number)) + facet_wrap(~country, scales = "free", nrow = 5, strip.position = 'right') + ylim(0, 205) + coord_flip() + theme(strip.background = element_rect(fill='#99CC00'), legend.position = "none") + ylab('Number') + xlab('Shooters') + ggtitle("Most Productive Shoots in Each League")
+```
+
+# Comparison among different leagues
+
+The different performance of attack players in different leagues leads me to think about this question: is there any significant difference among this leagues? For example, it might be that the football style in Spain is more emphasis on offensive. That's why Lionel Messi and Cristiano Ronaldo could score much more goals than others. Or the football philosophy in England is defend, so players in England could not get as many as scores as other leagues.
+
+To clarify this question, I compared the average goals per match of each league which showed that there were no significant difference. Therefore, it might be owning to the diversity of attack method, the goals were more equally distributed to players in England. Besides, Average goals per match in Spain were not really high, which means Lionel Messi and Cristiano Ronaldo are indeed excellent players.
+
+```{r Comparison between different leagues, warning = FALSE}
+# goals.data contains the number of matches, goals and the goals per match in each league
+goals.data <- ginf %>% group_by(country) %>% summarise(number.of.matchs = n())
+ginf$goal <- ginf$fthg + ginf$ftag
+goals.data <- goals.data %>% left_join(ginf %>% group_by(country) %>% summarise(number.of.goals = sum(goal)))
+goals.data$goals.per.match <- goals.data$number.of.goals/goals.data$number.of.matchs
+goals.data$goals.per.match <- round(goals.data$goals.per.match, digits = 2)
+goals.data <- pivot_longer(goals.data, 2:4, names_to = 'type', values_to = 'number')
+
+# plot 3
+ggplot(goals.data, aes(country, number, fill = type)) + geom_bar(stat="identity",position="dodge", width=.5) + coord_flip() + facet_wrap(~type, ncol = 3, scales = "free_x") + geom_text(aes(label = number), hjust = 1.1) + theme(strip.background = element_rect(fill='#CC9900'), strip.text = element_text(size = 12), legend.position = "none") + ggtitle('Comparison among different leagues') + xlab(NULL) + ylab(NULL)
+```
+
+# Lionel Messi vs. Cristiano Ronaldo
+
+Being the most capable contemporary football players, Lionel Messi and Cristiano Ronaldo achieved unprecedented successful. They are both excellent Offensive players, but is there any difference between them? That's what I want to answer in this plot.
+
+Radar chart is an ideal method to make comparison. We can see from this chart that they both achieve quite high goal efficiency(number of goals/number of attempts) and on target efficiency(number of on target shoots/number of attempts). Cristiano Ronaldo tends to be a pure shooter. His offside frequency is much higher than Messi while Messi tends  to be an organizer. That's why Messi's assist number is higher than Ronaldo. Moreover, the form of scoring of Ronaldo is more diverse while most goals of Messi are contributed by his left foot. Perhaps it's the most expensive left foot in the world!
+
+```{r Lionel Messi vs. Cristiano Ronaldo, warning = FALSE}
+messi.Ronaldo <- tibble(name = c('Messi', 'Ronaldo'), goals = NA, matches = NA, left = NA, right = NA, head = NA, offside = NA, ontarget = NA, assist = NA)
+messi.Ronaldo$goals <- c(nrow(filter(events, player == 'lionel messi' & is_goal == 1)), nrow(filter(events, player == 'cristiano ronaldo' & is_goal == 1)))
+messi.Ronaldo$matches <- c((filter(ginf, at == 'Barcelona') %>% summarise(count = n()) + filter(ginf, ht == 'Barcelona') %>% summarise(count = n()))[1,1],  (filter(ginf, at == 'Real Madrid') %>% summarise(count = n()) + filter(ginf, ht == 'Real Madrid') %>% summarise(count = n()))[1,1])
+messi.Ronaldo$left <- c(nrow(filter(events, player == 'lionel messi' & is_goal == 1 & bodypart == 2)), nrow(filter(events, player == 'cristiano ronaldo' & is_goal == 1 & bodypart == 2)))
+messi.Ronaldo$right <- c(nrow(filter(events, player == 'lionel messi' & is_goal == 1 & bodypart == 1)), nrow(filter(events, player == 'cristiano ronaldo' & is_goal == 1 & bodypart == 1)))
+messi.Ronaldo$head <- c(nrow(filter(events, player == 'lionel messi' & is_goal == 1 & bodypart == 3)), nrow(filter(events, player == 'cristiano ronaldo' & is_goal == 1 & bodypart == 3)))
+messi.Ronaldo$offside <- c(nrow(filter(events, player == 'lionel messi' & event_type == 9)), nrow(filter(events, player == 'cristiano ronaldo' & event_type == 9)))
+messi.Ronaldo$ontarget <- c(nrow(filter(events, player == 'lionel messi' & shot_outcome == 1)), nrow(filter(events, player == 'cristiano ronaldo' &  shot_outcome == 1)))
+messi.Ronaldo$assist <- c(nrow(filter(events, player2 == 'lionel messi' & is_goal == 1)), nrow(filter(events, player2 == 'cristiano ronaldo' & is_goal == 1)))
+messi.Ronaldo$shot <- c(nrow(filter(events, player == 'lionel messi' & event_type == 1)), nrow(filter(events, player == 'cristiano ronaldo' & event_type == 1)))
+
+messi.Ronaldo$goals_efficiency <- messi.Ronaldo$goals/messi.Ronaldo$matches
+messi.Ronaldo$offside_probability <- messi.Ronaldo$offside/messi.Ronaldo$matches
+messi.Ronaldo$assist_efficiency <- messi.Ronaldo$assist/messi.Ronaldo$matches
+messi.Ronaldo$ontarget_efficiency <- messi.Ronaldo$ontarget/messi.Ronaldo$shot
+messi.Ronaldo$left_foot <- messi.Ronaldo$left/messi.Ronaldo$goals
+messi.Ronaldo$right_foot <- messi.Ronaldo$right/messi.Ronaldo$goals
+messi.Ronaldo$head_goal <- messi.Ronaldo$head/messi.Ronaldo$goals
+
+dat <- matrix(c(rep(1, 7), rep(0, 7)), nrow = 2, byrow = T)
+colnames(dat) <- c('goals_efficiency', 'offside_probability', 'assist_efficiency', 'ontarget_efficiency', 'left_foot', 'right_foot', 'head_goal')
+
+dat <- as.data.frame(rbind(dat, messi.Ronaldo[, 11:17]))
+
+radarchart(dat, axistype =1,seg=5,pty=16,plty=1,plwd = 2, cglty = 1,cglcol = "grey",axislabcol = "red",title = "Messi vs. Ronaldo", vlcex = 0.9,calcex = 0.9,palcex = 0.5)
+legend(x = "right", legend = c('Messi', 'Ronaldo'), seg.len=0.5, bty = "n", horiz=FALSE, pch = 20 , col = c("black", "red"))
+```
+
+# Which part in one match is can not be missed?
+
+One football match will roughly last 2 hours, which might be too long to busy people. One strategy is that people can only watch the most exciting part. The data reveals that the last part of each half is the most intriguing. Events are concentrated in the final stage of the game, no matter what kind of events: goals, fouls and attempts. Therefore, as a football fan, no matter how busy you are, please do not miss the last part of a game.
+
+```{r Do not miss the last part of a game!, warning = FALSE}
+dat <- filter(events, event_type %in% c(1, 9)) %>% dplyr::select(time, event_type)
+dat$event <- rep('Attack', nrow(dat))
+
+dat1 <- filter(events, event_type %in% c(2, 8, 11)) %>% dplyr::select(time, event_type)
+dat1$event <- rep('Free kick', nrow(dat1))
+
+dat2 <- filter(events, event_type %in% c(3, 4, 5, 6, 10)) %>% dplyr::select(time, event_type)
+dat2$event <- rep('Foul', nrow(dat2))
+
+dat <- bind_rows(dat, dat1, dat2)
+
+dat3 <- filter(events, is_goal == 1) %>% dplyr::select(time, is_goal)
+dat3$event <- rep('Goal', nrow(dat3))
+
+dat <- rbind(dplyr::select(dat, time, event), dplyr::select(dat3, time, event))
+
+ggplot(data = dat, aes(time, fill = event)) + geom_bar() + facet_wrap(~event, nrow = 4, scales = "free_y")
+```
+
+# Use statistical model to predict team's ability
+
+After a series of data visualization, I want to predict team's ability by the events. To construct the model, I make up some derivative index:
+
+(1) Average Score(response): 3 scores for win, 1 score for draw and 0 for lose. average Score is an objective description of one team's ability.
+
+(2) Offensive. performance: it's an index of attack events, like goals, key pass and failed key pass. Higher this index, more offensive.
+
+(3) Defensive strength: it's an index containing the number of foul, yellow card, red card and hand ball. Higher this index, the way of playing soccer is more aggressive.
+
+(4) Super star: it's a dummy variable which will be 1 for those teams having super shooter and will be 0 for those teams doesn't. The definition of super shooter is one player who is listed in the top 5 most goals table.
+
+I run linear model to fit average Score to offensive, defensive strength and super star. The adjusted R-squared is 0.6641 which is very meaningful. However, I need to mention that there are a lot of pitfalls in this regression. For example, the super star variable. The regression shows that the coefficient is statistical significant, but it might be because the teams themselves are quite strong, 
+
+```{r regression model, warning = FALSE}
+# create a tibble 'score' to summarize total score of each team
+ht.score <- dplyr::select(ginf, ht, htscore)
+at.score <- dplyr::select(ginf, at, atscore)
+colnames(ht.score) <- c('team', 'score')
+colnames(at.score) <- c('team', 'score')
+score <- bind_rows(ht.score, at.score) %>% group_by(team) %>% summarise(sum.score = sum(score))
+
+temp <- dplyr::select(ginf, id_odsp, ht, at)
+score <- score %>% left_join(pivot_longer(temp, 2:3) %>% group_by(value) %>% summarise(count = n()), by = c('team' = 'value'))
+
+# attack performance
+score <- score %>% left_join(filter(events, event_type == 1 | event_type2 == 12 | event_type2 == 13) %>% group_by(event_team) %>% summarise(aggressive = n()), by = c('team' = 'event_team'))
+
+# Defensive strength
+score <- score %>% left_join(filter(events, event_type %in% c(3, 4, 5, 6, 10)) %>% group_by(event_team) %>% summarise(def = n()), by = c('team' = 'event_team'))
+
+# finger the league each team belongs to
+team <- dplyr::select(ginf, country, ht, at) %>% pivot_longer(2:3, names_to = 'type', values_to = 'teams') %>% distinct(teams, .keep_all = T)
+team <- dplyr::select(team, -'type')
+score <- left_join(score, team, by = c('team' = 'teams'))
+
+# whether a team has super shooter
+super.shooter <- events %>% filter(is_goal == 1 & event_type2 != 15) %>% dplyr::select(event_team, player) %>% distinct(player, event_team, .keep_all = T) %>% inner_join(shot.data, by = 'player') %>% dplyr::select(event_team, player)
+score$super_star <- 0
+for (i in 1:nrow(score)){
+  if (score$team[i] %in% super.shooter$event_team){score$super_star[i] <- 1}
+}
+
+# omit NA
+score <- setdiff(score, score[complete.cases(score) == 0, ])
+
+# output the data frame 'score'
+write.table(score, file ='C:/Users/wyn/Desktop/Rutgers/Data Wrangling/DW-project/score.csv', sep =" ", row.names =T)
+
+# calculate average index
+score$ave.score <- score$sum.score/score$count
+score$ave.agg <- score$aggressive/score$count
+score$ave.def <- score$def/score$count
+
+# plot the density of covariates
+score %>% gather(ave.agg, ave.score, ave.def, super_star, key = "var", value = "value") %>% ggplot(aes(x = value)) + geom_histogram(aes(fill = factor(var), y = ..density..), alpha = 0.3, colour = 'black') + stat_density(geom = 'line', position = 'identity', size = 1.5, aes(colour = factor(var))) +  facet_wrap(~ var, scales = "free", ncol = 4)
+
+# plot the correlation among covariates
+pairs(~ave.agg+ave.score+ave.def,data = score)
+
+# linear model
+score <- score %>% mutate(ave.score = sum.score/count, attack_ability = aggressive/count, defensive_strength = def/count)
+lm.fit <- lm(ave.score ~ ave.agg + ave.def + super_star, data = score)
+summary(lm.fit)
+```
+# Model diagnostics
+
+To detect the performance of this model, I run 500 times bootstrap to create CI for all predictors and the result is quite similar to the report of linear model. Cross-validation shows that the MSE of this model is 0.238.
+
+```{r Bootstrap and Cross-Validation, warning = FALSE}
+# bootstrap to create CI
+set.seed(1234)
+boot <- bootstraps(score, 500)
+boot_result <- map(boot$splits, ~tidy(lm(ave.score ~ ave.agg + ave.def + super_star, data = .))) %>% bind_rows(.)
+boot_CI <- boot_result %>% group_by(term) %>% summarize(conf.low = quantile(estimate, 0.05 / 2), conf.high = quantile(estimate, 1 - 0.05 / 2))
+boot_CI
+
+# Cross Validation of the model
+score.cv <- crossv_kfold(score, k = 10) %>% mutate(model = map(train, ~lm(ave.score ~ ave.agg + ave.def + super_star, data = .)))
+map2_dbl(score.cv$model, score.cv$test,rmse) %>% mean()
+```
+
+# Fit model to each league
+
+In this chapter, I want to explore that how this regression model performs to different leagues. The data shows that there are no significant difference among the performance. All the residuals of this models are symmetric.
+
+This regression model seems a little bit better in England, Italy and Spain, since the R-squared are higher and the confidence intervals are smaller. 
+
+```{r fit model to each league, warning = FALSE}
+# lm models to each league
+regressions <- score %>% group_by(country) %>% do(tidy(lm(ave.score ~ attack_ability + defensive_strength + super_star, data = .), conf.int = TRUE))
+coefs <- regressions %>% ungroup()
+coefs %>% filter(term != '(Intercept)') %>% ggplot(aes(x = estimate, y = country)) + geom_point() + geom_errorbarh(aes(xmin = conf.low, xmax = conf.high)) + facet_wrap(~ term, nrow = 3) + geom_vline(xintercept = 0, color = "red") + theme(strip.background = element_rect(fill='#99CC00')) + ggtitle('LM Models among Different Leagues')
+
+# residuals of each team according to different leagues
+reg_observations <- score %>% group_by(country) %>% do(augment(lm(ave.score ~ attack_ability + defensive_strength + super_star, data = .))) %>% left_join(dplyr::select(score, team, ave.score, ave.agg), by = c('ave.score' = 'ave.score', 'attack_ability' = 'ave.agg'))
+dplyr::select(reg_observations, .resid, team, country) %>% ggplot() + geom_histogram(aes(.resid)) + stat_density(geom = 'line', position = 'identity', size = 1.5, aes(.resid, color = factor(country))) + facet_wrap(~country) + geom_vline(xintercept = 0, color = "red")
+
+# R-squared
+R2 <- score %>% group_by(country) %>% do(glance(lm(ave.score ~ attack_ability + defensive_strength + super_star, data = .)))
+R2[, 1:2]
+```
+
